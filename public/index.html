@@ -388,7 +388,6 @@
       border-radius: 12px;
       background: white;
       box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-      position: relative;
     }
 
     body.dark-mode .message-content {
@@ -403,17 +402,6 @@
     .message.admin .message-content {
       background: linear-gradient(135deg, var(--admin), #f97316);
       color: white;
-    }
-
-    .encrypted-indicator {
-      position: absolute;
-      top: 5px;
-      right: 5px;
-      font-size: 0.7rem;
-      opacity: 0.7;
-      display: flex;
-      align-items: center;
-      gap: 3px;
     }
 
     .message-header {
@@ -1008,8 +996,7 @@
             <span class="message-username ${isAdminMsg ? 'admin' : ''}">${msg.username} ${isAdminMsg ? '👑' : ''}</span>
             <span class="message-time">${msg.time}</span>
           </div>
-          <div class="message-text">${escapeHtml(msg.text)}</div>
-          <div class="encrypted-indicator">🔒 Encrypted</div>`;
+          <div class="message-text">${escapeHtml(msg.text)}</div>`;
         
         if (msg.messageType === 'image') {
           content += `<img src="${msg.text}" class="message-image" onclick="viewImage('${msg.text}')">`;
