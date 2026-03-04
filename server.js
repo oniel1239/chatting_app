@@ -12,7 +12,7 @@ const server = http.createServer(app);
 const io = socketIo(server);
 
 // Configuration
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 5000;
 const DATA_DIR = path.join(__dirname, 'data');
 const UPLOADS_DIR = path.join(__dirname, 'uploads');
 const ADMIN_USERNAME = 'Halku'; // Admin username - Only you!
@@ -409,7 +409,7 @@ setInterval(() => {
   io.emit('users', Array.from(onlineUsers.keys()));
 }, 5000);
 
-server.listen(PORT, () => {
+server.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Chat server running at http://localhost:${PORT}`);
   console.log(`👑 Admin (Owner): ${ADMIN_USERNAME}`);
   console.log(`🔒 End-to-end encryption: Enabled (AES-256-GCM)`);
