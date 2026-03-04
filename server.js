@@ -305,16 +305,18 @@ io.on('connection', (socket) => {
       encrypted: false
     };
     
-    // If Halku (admin) sends message - send only to specific recipient or all
+    // If Halku (admin) sends message - send only to specific recipient
     if (isAdmin) {
       if (recipient) {
-        // Send to specific user only
+        // Send to specific user only AND to admin (sender)
         const recipientSocket = userSockets.get(recipient);
         if (recipientSocket) {
           recipientSocket.emit('message', { ...decryptedMessage, time: new Date(message.time).toLocaleTimeString() });
         }
+        // Also send back to admin so it appears in the chat
+        socket.emit('message', { ...decryptedMessage, time: new Date(message.time).toLocaleTimeString() });
       } else {
-        // Broadcast to everyone
+        // Broadcast to everyone (for general messages)
         io.to(room).emit('message', { ...decryptedMessage, time: new Date(message.time).toLocaleTimeString() });
       }
     } else {

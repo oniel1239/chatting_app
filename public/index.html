@@ -77,19 +77,6 @@
       width: 100%;
     }
 
-    .encryption-badge {
-      background: linear-gradient(135deg, var(--encrypted), #059669);
-      color: white;
-      padding: 6px 12px;
-      border-radius: 12px;
-      font-size: 0.75rem;
-      font-weight: 600;
-      display: inline-flex;
-      align-items: center;
-      gap: 5px;
-      margin-top: 10px;
-    }
-
     .auth-container p {
       color: #666;
       margin-bottom: 25px;
@@ -329,6 +316,15 @@
       height: 8px;
       background: var(--success);
       border-radius: 50%;
+      margin-left: auto;
+    }
+
+    .unread-badge {
+      background: var(--danger);
+      color: white;
+      font-size: 0.7rem;
+      padding: 2px 6px;
+      border-radius: 10px;
       margin-left: auto;
     }
 
@@ -707,18 +703,24 @@
       gap: 10px;
     }
 
-    .welcome-banner a {
-      color: white;
-      font-weight: 600;
-      text-decoration: underline;
-    }
-
     .chat-with-user {
       background: var(--primary);
       color: white;
       padding: 10px 20px;
       text-align: center;
       font-weight: 600;
+    }
+    
+    /* Empty state */
+    .empty-state {
+      text-align: center;
+      padding: 40px 20px;
+      color: #888;
+    }
+    
+    .empty-state-icon {
+      font-size: 3rem;
+      margin-bottom: 15px;
     }
   </style>
 </head>
@@ -727,10 +729,7 @@
   <div id="authScreen" class="auth-container">
     <h1>🔐 Secure Chat</h1>
     <div id="adminBadge" class="admin-badge" style="display:none;">👑 Admin (Owner)</div>
-    <p>End-to-end encrypted conversations with Halku</p>
-    <div style="text-align:center;">
-      <span class="encryption-badge">🔒 AES-256-GCM Encrypted</span>
-    </div>
+    <p>Private conversations with Halku</p>
     
     <div class="auth-tabs">
       <button class="auth-tab active" onclick="showTab('login')">Login</button>
@@ -755,7 +754,7 @@
   <!-- Chat Screen -->
   <div id="chatScreen" class="chat-container" style="display:none;">
     <div class="welcome-banner" id="welcomeBanner">
-      🔒 End-to-end encrypted - Your messages are private and secure
+      🔒 Your messages are private and secure
     </div>
     
     <div id="chatWithUser" class="chat-with-user" style="display:none;"></div>
@@ -832,6 +831,7 @@
     let darkMode = false;
     const ADMIN_NAME = 'Halku';
     let currentChatUser = ADMIN_NAME; // Who you're chatting with
+    let allMessages = []; // Store all messages for admin
 
     // Emoji list
     const emojis = ['😀','😂','😍','🥰','😎','🤔','👍','👎','❤️','🔥','🎉','👏','🙌','💯','✨','🚀','💪','🙏','😢','😡'];
@@ -909,7 +909,7 @@
       if (isAdmin) {
         document.getElementById('adminBadge').style.display = 'block';
         document.getElementById('adminBadgeHeader').style.display = 'flex';
-        document.getElementById('welcomeBanner').innerHTML = '👑 Welcome back, <strong>Halku</strong>! 🔒 All conversations are encrypted';
+        document.getElementById('welcomeBanner').innerHTML = '👑 Welcome back, <strong>Halku</strong>! 🔒 All conversations are private';
       }
       
       socket.emit('join-room', 'general');
@@ -945,7 +945,9 @@
       currentChatUser = user;
       document.querySelectorAll('.user-item').forEach(item => {
         const itemName = item.querySelector('span')?.textContent;
-        item.classList.toggle('active', itemName === user);
+        // Handle "(Owner)" suffix
+        const cleanName = itemName?.replace(' (Owner)', '');
+        item.classList.toggle('active', cleanName === user);
       });
       
       // Update header
@@ -966,20 +968,69 @@
       fetch(`/api/messages?room=${room}&limit=100&username=${encodeURIComponent(currentUser)}`)
         .then(res => res.json())
         .then(messages => {
-          document.getElementById('messages').innerHTML = '';
-          // Filter messages for current chat if not admin
-          let filteredMessages = messages;
-          if (!isAdmin && currentChatUser === ADMIN_NAME) {
-            // User chatting with Halku - show only their conversation
-            filteredMessages = messages.filter(m => 
-              m.username === currentUser || m.username === ADMIN_NAME
-            );
-          }
-          filteredMessages.forEach(msg => addMessage(msg, false));
+          allMessages = messages; // Store all messages
+          renderMessages();
         });
     }
 
+    function getFilteredMessages() {
+      if (isAdmin) {
+        // Admin chatting with specific user - show ONLY that conversation
+        if (currentChatUser !== ADMIN_NAME) {
+          return allMessages.filter(m => 
+            (m.username === currentChatUser && m.recipient === ADMIN_NAME) ||
+            (m.username === ADMIN_NAME && m.recipient === currentChatUser) ||
+            (m.username === currentChatUser && !m.recipient) ||
+            (m.username === ADMIN_NAME && !m.recipient)
+          );
+        }
+        // Admin viewing general - show all
+        return allMessages;
+      } else {
+        // Regular user - show only their conversation with Halku
+        return allMessages.filter(m => 
+          m.username === currentUser || m.username === ADMIN_NAME
+        );
+      }
+    }
+
+    function renderMessages() {
+      const container = document.getElementById('messages');
+      const filtered = getFilteredMessages();
+      
+      if (filtered.length === 0) {
+        container.innerHTML = `
+          <div class="empty-state">
+            <div class="empty-state-icon">💬</div>
+            <p>No messages yet</p>
+            <p style="font-size:0.85rem;margin-top:10px;">Start the conversation!</p>
+          </div>
+        `;
+        return;
+      }
+      
+      container.innerHTML = '';
+      filtered.forEach(msg => addMessage(msg, false));
+      container.scrollTop = container.scrollHeight;
+    }
+
     function addMessage(msg, scroll = true) {
+      // Store message in allMessages
+      const existingIndex = allMessages.findIndex(m => m.id === msg.id);
+      if (existingIndex >= 0) {
+        allMessages[existingIndex] = msg;
+      } else {
+        allMessages.push(msg);
+      }
+      
+      // Check if this message belongs to current chat view
+      const filtered = getFilteredMessages();
+      const isInCurrentChat = filtered.some(m => m.id === msg.id);
+      
+      if (!isInCurrentChat) {
+        return; // Don't display messages from other conversations
+      }
+      
       const container = document.getElementById('messages');
       const div = document.createElement('div');
       const isOwn = msg.username === currentUser;
@@ -1011,6 +1062,10 @@
         div.innerHTML = content;
       }
 
+      // Remove empty state if exists
+      const emptyState = container.querySelector('.empty-state');
+      if (emptyState) emptyState.remove();
+      
       container.appendChild(div);
       if (scroll) container.scrollTop = container.scrollHeight;
     }
@@ -1116,16 +1171,7 @@
     });
 
     socket.on('message', (msg) => {
-      // Only show messages relevant to current chat
-      if (isAdmin) {
-        // Admin sees all messages
-        addMessage(msg);
-      } else {
-        // Users only see messages from/to them and Halku
-        if (msg.username === currentUser || msg.username === ADMIN_NAME) {
-          addMessage(msg);
-        }
-      }
+      addMessage(msg);
     });
 
     // Utilities
