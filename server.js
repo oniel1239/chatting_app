@@ -69,11 +69,7 @@ app.post('/api/register', async (req, res) => {
   const { username, password } = req.body;
   if (!username || !password) return res.status(400).json({ error: 'Username and password required' });
   
-  // Block admin username registration - Only Halku can be admin!
-  if (username.toLowerCase() === ADMIN_USERNAME.toLowerCase()) {
-    return res.status(400).json({ error: 'This username is reserved for the admin' });
-  }
-  
+  // Check if username already exists
   if (users[username]) return res.status(400).json({ error: 'Username already exists' });
   
   const hashedPassword = await bcrypt.hash(password, 10);
@@ -145,12 +141,6 @@ io.on('connection', (socket) => {
 
   socket.on('register', async (data) => {
     const { username, password } = data;
-    
-    // Block admin username registration
-    if (username.toLowerCase() === ADMIN_USERNAME.toLowerCase()) {
-      socket.emit('auth-error', { error: 'This username is reserved for Halku' });
-      return;
-    }
     
     if (!users[username]) {
       const hashedPassword = await bcrypt.hash(password, 10);
