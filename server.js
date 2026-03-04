@@ -15,6 +15,7 @@ const io = socketIo(server);
 const PORT = process.env.PORT || 3000;
 const DATA_DIR = path.join(__dirname, 'data');
 const UPLOADS_DIR = path.join(__dirname, 'uploads');
+const ADMIN_USERNAME = 'Halku'; // Admin username - Only you!
 
 // Ensure directories exist
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
@@ -67,6 +68,12 @@ app.use('/uploads', express.static(UPLOADS_DIR));
 app.post('/api/register', async (req, res) => {
   const { username, password } = req.body;
   if (!username || !password) return res.status(400).json({ error: 'Username and password required' });
+  
+  // Block admin username registration - Only Halku can be admin!
+  if (username.toLowerCase() === ADMIN_USERNAME.toLowerCase()) {
+    return res.status(400).json({ error: 'This username is reserved for the admin' });
+  }
+  
   if (users[username]) return res.status(400).json({ error: 'Username already exists' });
   
   const hashedPassword = await bcrypt.hash(password, 10);
@@ -87,13 +94,27 @@ app.post('/api/login', async (req, res) => {
   const valid = await bcrypt.compare(password, users[username].password);
   if (!valid) return res.status(400).json({ error: 'Invalid credentials' });
   
-  res.json({ success: true, username, userId: users[username].id });
+  const isAdmin = username === ADMIN_USERNAME;
+  res.json({ success: true, username, userId: users[username].id, isAdmin });
 });
 
 app.get('/api/messages', (req, res) => {
-  const { room = 'general', limit = 100 } = req.query;
-  const roomMessages = messages.filter(m => m.room === room);
-  res.json(roomMessages.slice(-limit));
+  const { room = 'general', limit = 100, username } = req.query;
+  
+  // Admin (Halku) sees ALL messages from all users
+  // Regular users only see their own conversations with admin
+  let filteredMessages;
+  if (username === ADMIN_USERNAME) {
+    filteredMessages = messages.filter(m => m.room === room);
+  } else {
+    // Users only see their messages and admin's replies to them
+    filteredMessages = messages.filter(m => 
+      m.room === room && 
+      (m.username === username || m.username === ADMIN_USERNAME)
+    );
+  }
+  
+  res.json(filteredMessages.slice(-limit));
 });
 
 app.post('/api/upload', upload.single('file'), (req, res) => {
@@ -120,9 +141,17 @@ io.on('connection', (socket) => {
   console.log('User connected:', socket.id);
   let currentUser = null;
   let currentRoom = 'general';
+  let isAdmin = false;
 
   socket.on('register', async (data) => {
     const { username, password } = data;
+    
+    // Block admin username registration
+    if (username.toLowerCase() === ADMIN_USERNAME.toLowerCase()) {
+      socket.emit('auth-error', { error: 'This username is reserved for Halku' });
+      return;
+    }
+    
     if (!users[username]) {
       const hashedPassword = await bcrypt.hash(password, 10);
       users[username] = {
@@ -136,9 +165,11 @@ io.on('connection', (socket) => {
     const valid = await bcrypt.compare(password, users[username].password);
     if (valid) {
       currentUser = username;
+      isAdmin = username === ADMIN_USERNAME;
       socket.username = username;
+      socket.isAdmin = isAdmin;
       socket.join('general');
-      socket.emit('auth-success', { username, userId: users[username].id });
+      socket.emit('auth-success', { username, userId: users[username].id, isAdmin });
       socket.emit('users', getOnlineUsers());
       socket.broadcast.emit('message', { type: 'system', text: `${username} joined`, room: 'general' });
     } else {
@@ -152,9 +183,11 @@ io.on('connection', (socket) => {
       const valid = await bcrypt.compare(password, users[username].password);
       if (valid) {
         currentUser = username;
+        isAdmin = username === ADMIN_USERNAME;
         socket.username = username;
+        socket.isAdmin = isAdmin;
         socket.join('general');
-        socket.emit('auth-success', { username, userId: users[username].id });
+        socket.emit('auth-success', { username, userId: users[username].id, isAdmin });
         socket.emit('users', getOnlineUsers());
         socket.broadcast.emit('message', { type: 'system', text: `${username} joined`, room: 'general' });
       } else {
@@ -171,8 +204,25 @@ io.on('connection', (socket) => {
       currentRoom = room;
       socket.join(room);
       socket.emit('room-joined', { room });
-      socket.emit('messages', messages.filter(m => m.room === room).slice(-100));
-      socket.broadcast.to(room).emit('message', { type: 'system', text: `${currentUser} joined ${room}`, room });
+      
+      // Load messages based on user type
+      let roomMessages;
+      if (isAdmin) {
+        // Halku sees ALL messages
+        roomMessages = messages.filter(m => m.room === room).slice(-100);
+      } else {
+        // Users only see their conversation with Halku
+        roomMessages = messages.filter(m => 
+          m.room === room && 
+          (m.username === currentUser || m.username === ADMIN_USERNAME)
+        ).slice(-100);
+      }
+      
+      socket.emit('messages', roomMessages);
+      
+      if (!isAdmin) {
+        socket.broadcast.to(room).emit('message', { type: 'system', text: `${currentUser} joined ${room}`, room });
+      }
     }
   });
 
@@ -192,7 +242,21 @@ io.on('connection', (socket) => {
     
     messages.push(message);
     saveMessages();
-    io.to(room).emit('message', { ...message, time: new Date(message.time).toLocaleTimeString() });
+    
+    // If Halku (admin) sends message - broadcast to everyone
+    // If regular user sends - only Halku and that user see it
+    if (isAdmin) {
+      io.to(room).emit('message', { ...message, time: new Date(message.time).toLocaleTimeString() });
+    } else {
+      // Send to the sender
+      socket.emit('message', { ...message, time: new Date(message.time).toLocaleTimeString() });
+      
+      // Send ONLY to Halku (admin)
+      const adminSocket = userSockets.get(ADMIN_USERNAME);
+      if (adminSocket) {
+        adminSocket.emit('message', { ...message, time: new Date(message.time).toLocaleTimeString() });
+      }
+    }
   });
 
   socket.on('privateMessage', (data) => {
@@ -229,7 +293,16 @@ io.on('connection', (socket) => {
       if (!msg.reactions[emoji].includes(currentUser)) {
         msg.reactions[emoji].push(currentUser);
         saveMessages();
-        io.to(room).emit('reaction', { messageId, emoji, users: msg.reactions[emoji] });
+        
+        if (isAdmin) {
+          io.to(room).emit('reaction', { messageId, emoji, users: msg.reactions[emoji] });
+        } else {
+          socket.emit('reaction', { messageId, emoji, users: msg.reactions[emoji] });
+          const adminSocket = userSockets.get(ADMIN_USERNAME);
+          if (adminSocket) {
+            adminSocket.emit('reaction', { messageId, emoji, users: msg.reactions[emoji] });
+          }
+        }
       }
     }
   });
@@ -239,7 +312,9 @@ io.on('connection', (socket) => {
       onlineUsers.delete(currentUser);
       userSockets.delete(currentUser);
       io.emit('users', getOnlineUsers());
-      io.to(currentRoom).emit('message', { type: 'system', text: `${currentUser} left`, room: currentRoom });
+      if (!isAdmin) {
+        io.to(currentRoom).emit('message', { type: 'system', text: `${currentUser} left`, room: currentRoom });
+      }
     }
   });
 
@@ -262,6 +337,7 @@ setInterval(() => {
 
 server.listen(PORT, () => {
   console.log(`🚀 Chat server running at http://localhost:${PORT}`);
+  console.log(`👑 Admin (Owner): ${ADMIN_USERNAME}`);
   console.log(`📁 Data directory: ${DATA_DIR}`);
   console.log(`📤 Uploads directory: ${UPLOADS_DIR}`);
 });
