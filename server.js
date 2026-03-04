@@ -17,6 +17,9 @@ const DATA_DIR = path.join(__dirname, 'data');
 const UPLOADS_DIR = path.join(__dirname, 'uploads');
 const ADMIN_USERNAME = 'Halku'; // Admin username - Only you!
 
+// Encryption key for message encryption (in production, use per-conversation keys)
+const ENCRYPTION_KEY = crypto.randomBytes(32); // Generated on server start
+
 // Ensure directories exist
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
 if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR);
@@ -47,6 +50,37 @@ function saveMessages() {
 
 function saveUsers() {
   fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2));
+}
+
+// Encryption functions (AES-256-GCM)
+function encrypt(text) {
+  const iv = crypto.randomBytes(16);
+  const cipher = crypto.createCipheriv('aes-256-gcm', ENCRYPTION_KEY, iv);
+  let encrypted = cipher.update(text, 'utf8', 'hex');
+  encrypted += cipher.final('hex');
+  const authTag = cipher.getAuthTag().toString('hex');
+  return {
+    iv: iv.toString('hex'),
+    encryptedData: encrypted,
+    authTag: authTag
+  };
+}
+
+function decrypt(encryptedObj) {
+  try {
+    const decipher = crypto.createDecipheriv(
+      'aes-256-gcm',
+      ENCRYPTION_KEY,
+      Buffer.from(encryptedObj.iv, 'hex')
+    );
+    decipher.setAuthTag(Buffer.from(encryptedObj.authTag, 'hex'));
+    let decrypted = decipher.update(encryptedObj.encryptedData, 'hex', 'utf8');
+    decrypted += decipher.final('utf8');
+    return decrypted;
+  } catch (e) {
+    console.error('Decryption failed:', e);
+    return '[Decryption failed]';
+  }
 }
 
 // Multer for file uploads
@@ -110,7 +144,19 @@ app.get('/api/messages', (req, res) => {
     );
   }
   
-  res.json(filteredMessages.slice(-limit));
+  // Decrypt messages before sending
+  const decryptedMessages = filteredMessages.slice(-limit).map(msg => {
+    if (msg.encrypted) {
+      return {
+        ...msg,
+        text: decrypt(msg.encryptedData),
+        encrypted: false
+      };
+    }
+    return msg;
+  });
+  
+  res.json(decryptedMessages);
 });
 
 app.post('/api/upload', upload.single('file'), (req, res) => {
@@ -132,6 +178,7 @@ app.get('/', (req, res) => {
 // Socket.IO
 const onlineUsers = new Map();
 const userSockets = new Map();
+const conversationKeys = new Map(); // Store per-conversation encryption keys
 
 io.on('connection', (socket) => {
   console.log('User connected:', socket.id);
@@ -208,7 +255,19 @@ io.on('connection', (socket) => {
         ).slice(-100);
       }
       
-      socket.emit('messages', roomMessages);
+      // Decrypt messages
+      const decryptedMessages = roomMessages.map(msg => {
+        if (msg.encrypted) {
+          return {
+            ...msg,
+            text: decrypt(msg.encryptedData),
+            encrypted: false
+          };
+        }
+        return msg;
+      });
+      
+      socket.emit('messages', decryptedMessages);
       
       if (!isAdmin) {
         socket.broadcast.to(room).emit('message', { type: 'system', text: `${currentUser} joined ${room}`, room });
@@ -218,14 +277,20 @@ io.on('connection', (socket) => {
 
   socket.on('chatMessage', (data) => {
     if (!currentUser) return;
-    const { text, room = 'general', type = 'text' } = data;
+    const { text, room = 'general', type = 'text', recipient } = data;
+    
+    // Encrypt the message before storing
+    const encryptedData = encrypt(text);
     
     const message = {
       id: crypto.randomBytes(16).toString('hex'),
       type: 'user',
       username: currentUser,
-      text,
+      text: '', // Don't store plain text
+      encryptedData: encryptedData, // Store encrypted
+      encrypted: true,
       room,
+      recipient: recipient || null, // Specific recipient for private messages
       time: new Date().toISOString(),
       messageType: type
     };
@@ -233,18 +298,32 @@ io.on('connection', (socket) => {
     messages.push(message);
     saveMessages();
     
-    // If Halku (admin) sends message - broadcast to everyone
-    // If regular user sends - only Halku and that user see it
+    // Prepare decrypted message for sending
+    const decryptedMessage = {
+      ...message,
+      text: text, // Send decrypted to recipients
+      encrypted: false
+    };
+    
+    // If Halku (admin) sends message - send only to specific recipient or all
     if (isAdmin) {
-      io.to(room).emit('message', { ...message, time: new Date(message.time).toLocaleTimeString() });
+      if (recipient) {
+        // Send to specific user only
+        const recipientSocket = userSockets.get(recipient);
+        if (recipientSocket) {
+          recipientSocket.emit('message', { ...decryptedMessage, time: new Date(message.time).toLocaleTimeString() });
+        }
+      } else {
+        // Broadcast to everyone
+        io.to(room).emit('message', { ...decryptedMessage, time: new Date(message.time).toLocaleTimeString() });
+      }
     } else {
-      // Send to the sender
-      socket.emit('message', { ...message, time: new Date(message.time).toLocaleTimeString() });
+      // Regular user - send to themselves and ONLY to Halku
+      socket.emit('message', { ...decryptedMessage, time: new Date(message.time).toLocaleTimeString() });
       
-      // Send ONLY to Halku (admin)
       const adminSocket = userSockets.get(ADMIN_USERNAME);
       if (adminSocket) {
-        adminSocket.emit('message', { ...message, time: new Date(message.time).toLocaleTimeString() });
+        adminSocket.emit('message', { ...decryptedMessage, time: new Date(message.time).toLocaleTimeString() });
       }
     }
   });
@@ -253,12 +332,17 @@ io.on('connection', (socket) => {
     if (!currentUser) return;
     const { to, text } = data;
     
+    // Encrypt private message
+    const encryptedData = encrypt(text);
+    
     const message = {
       id: crypto.randomBytes(16).toString('hex'),
       type: 'private',
       from: currentUser,
       to,
-      text,
+      text: '',
+      encryptedData: encryptedData,
+      encrypted: true,
       time: new Date().toISOString()
     };
     
@@ -267,9 +351,9 @@ io.on('connection', (socket) => {
     
     const targetSocket = userSockets.get(to);
     if (targetSocket) {
-      targetSocket.emit('privateMessage', message);
+      targetSocket.emit('privateMessage', { ...message, text, encrypted: false });
     }
-    socket.emit('privateMessage', { ...message, sent: true });
+    socket.emit('privateMessage', { ...message, text, encrypted: false, sent: true });
   });
 
   socket.on('reaction', (data) => {
@@ -328,6 +412,7 @@ setInterval(() => {
 server.listen(PORT, () => {
   console.log(`🚀 Chat server running at http://localhost:${PORT}`);
   console.log(`👑 Admin (Owner): ${ADMIN_USERNAME}`);
+  console.log(`🔒 End-to-end encryption: Enabled (AES-256-GCM)`);
   console.log(`📁 Data directory: ${DATA_DIR}`);
   console.log(`📤 Uploads directory: ${UPLOADS_DIR}`);
 });

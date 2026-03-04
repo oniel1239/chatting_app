@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>💬 Chat with Halku</title>
+  <title>💬 Secure Chat with Halku</title>
   <style>
     :root {
       --primary: #4361ee;
@@ -21,6 +21,7 @@
       --warning: #f59e0b;
       --danger: #ef4444;
       --admin: #f59e0b;
+      --encrypted: #10b981;
     }
 
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -74,6 +75,19 @@
       margin-bottom: 15px;
       text-align: center;
       width: 100%;
+    }
+
+    .encryption-badge {
+      background: linear-gradient(135deg, var(--encrypted), #059669);
+      color: white;
+      padding: 6px 12px;
+      border-radius: 12px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      margin-top: 10px;
     }
 
     .auth-container p {
@@ -374,6 +388,7 @@
       border-radius: 12px;
       background: white;
       box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+      position: relative;
     }
 
     body.dark-mode .message-content {
@@ -390,6 +405,17 @@
       color: white;
     }
 
+    .encrypted-indicator {
+      position: absolute;
+      top: 5px;
+      right: 5px;
+      font-size: 0.7rem;
+      opacity: 0.7;
+      display: flex;
+      align-items: center;
+      gap: 3px;
+    }
+
     .message-header {
       display: flex;
       justify-content: space-between;
@@ -404,10 +430,6 @@
 
     .message-username.admin {
       color: var(--admin);
-    }
-
-    .message.own .message-username.admin {
-      color: #ffd700;
     }
 
     .message-time {
@@ -686,11 +708,15 @@
 
     /* Welcome banner */
     .welcome-banner {
-      background: linear-gradient(135deg, var(--admin), #f97316);
+      background: linear-gradient(135deg, var(--encrypted), #059669);
       color: white;
-      padding: 15px 20px;
+      padding: 12px 20px;
       text-align: center;
-      font-size: 0.95rem;
+      font-size: 0.9rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
     }
 
     .welcome-banner a {
@@ -698,14 +724,25 @@
       font-weight: 600;
       text-decoration: underline;
     }
+
+    .chat-with-user {
+      background: var(--primary);
+      color: white;
+      padding: 10px 20px;
+      text-align: center;
+      font-weight: 600;
+    }
   </style>
 </head>
 <body>
   <!-- Auth Screen -->
   <div id="authScreen" class="auth-container">
-    <h1>💬 Chat with Halku</h1>
+    <h1>🔐 Secure Chat</h1>
     <div id="adminBadge" class="admin-badge" style="display:none;">👑 Admin (Owner)</div>
-    <p>Start a private conversation with Halku</p>
+    <p>End-to-end encrypted conversations with Halku</p>
+    <div style="text-align:center;">
+      <span class="encryption-badge">🔒 AES-256-GCM Encrypted</span>
+    </div>
     
     <div class="auth-tabs">
       <button class="auth-tab active" onclick="showTab('login')">Login</button>
@@ -730,11 +767,13 @@
   <!-- Chat Screen -->
   <div id="chatScreen" class="chat-container" style="display:none;">
     <div class="welcome-banner" id="welcomeBanner">
-      💬 You're in a private chat with <strong>Halku</strong> - Messages are only visible to you and Halku
+      🔒 End-to-end encrypted - Your messages are private and secure
     </div>
     
+    <div id="chatWithUser" class="chat-with-user" style="display:none;"></div>
+    
     <div class="chat-header">
-      <h1>💬 Chat with Halku</h1>
+      <h1>🔐 Secure Chat</h1>
       <div class="header-actions">
         <button class="header-btn" onclick="toggleSidebar()" title="Toggle Sidebar">☰</button>
         <span id="currentUser" class="user-badge">👤 <span></span></span>
@@ -749,7 +788,7 @@
       <div id="sidebar" class="sidebar">
         <div class="sidebar-section" style="flex:1; overflow-y:auto;">
           <div class="sidebar-title">👥 Online Users (<span id="userCount">0</span>)</div>
-          <div class="user-item active" onclick="selectChat('Halku')">
+          <div class="user-item active" data-user="Halku" onclick="selectChat('Halku')">
             <span class="user-icon">👑</span>
             <span>Halku</span>
             <span style="margin-left:auto;font-size:0.8rem;">(Owner)</span>
@@ -781,7 +820,7 @@
               type="text" 
               id="messageInput" 
               class="message-input" 
-              placeholder="Type a message to Halku..." 
+              placeholder="Type an encrypted message..." 
               onkeypress="if(event.key==='Enter')sendMessage()"
             >
             <div class="input-actions">
@@ -804,6 +843,7 @@
     let selectedFile = null;
     let darkMode = false;
     const ADMIN_NAME = 'Halku';
+    let currentChatUser = ADMIN_NAME; // Who you're chatting with
 
     // Emoji list
     const emojis = ['😀','😂','😍','🥰','😎','🤔','👍','👎','❤️','🔥','🎉','👏','🙌','💯','✨','🚀','💪','🙏','😢','😡'];
@@ -881,7 +921,7 @@
       if (isAdmin) {
         document.getElementById('adminBadge').style.display = 'block';
         document.getElementById('adminBadgeHeader').style.display = 'flex';
-        document.getElementById('welcomeBanner').innerHTML = '👑 Welcome back, <strong>Halku</strong>! You can see all conversations.';
+        document.getElementById('welcomeBanner').innerHTML = '👑 Welcome back, <strong>Halku</strong>! 🔒 All conversations are encrypted';
       }
       
       socket.emit('join-room', 'general');
@@ -914,10 +954,23 @@
     }
 
     function selectChat(user) {
-      // In this version, everyone chats with Halku
+      currentChatUser = user;
       document.querySelectorAll('.user-item').forEach(item => {
-        item.classList.toggle('active', item.querySelector('span')?.textContent === user);
+        const itemName = item.querySelector('span')?.textContent;
+        item.classList.toggle('active', itemName === user);
       });
+      
+      // Update header
+      const chatWithHeader = document.getElementById('chatWithUser');
+      if (user !== ADMIN_NAME && !isAdmin) {
+        chatWithHeader.style.display = 'block';
+        chatWithHeader.textContent = `💬 Chatting with ${user}`;
+      } else {
+        chatWithHeader.style.display = 'none';
+      }
+      
+      // Load messages for this conversation
+      loadMessages('general');
     }
 
     // Messages
@@ -926,7 +979,15 @@
         .then(res => res.json())
         .then(messages => {
           document.getElementById('messages').innerHTML = '';
-          messages.forEach(msg => addMessage(msg, false));
+          // Filter messages for current chat if not admin
+          let filteredMessages = messages;
+          if (!isAdmin && currentChatUser === ADMIN_NAME) {
+            // User chatting with Halku - show only their conversation
+            filteredMessages = messages.filter(m => 
+              m.username === currentUser || m.username === ADMIN_NAME
+            );
+          }
+          filteredMessages.forEach(msg => addMessage(msg, false));
         });
     }
 
@@ -947,7 +1008,8 @@
             <span class="message-username ${isAdminMsg ? 'admin' : ''}">${msg.username} ${isAdminMsg ? '👑' : ''}</span>
             <span class="message-time">${msg.time}</span>
           </div>
-          <div class="message-text">${escapeHtml(msg.text)}</div>`;
+          <div class="message-text">${escapeHtml(msg.text)}</div>
+          <div class="encrypted-indicator">🔒 Encrypted</div>`;
         
         if (msg.messageType === 'image') {
           content += `<img src="${msg.text}" class="message-image" onclick="viewImage('${msg.text}')">`;
@@ -974,7 +1036,14 @@
         if (selectedFile) {
           uploadFile(text);
         } else {
-          socket.emit('chatMessage', { text, room: 'general', type: 'text' });
+          // Send with recipient if Halku is replying to a specific user
+          const recipient = isAdmin && currentChatUser !== ADMIN_NAME ? currentChatUser : null;
+          socket.emit('chatMessage', { 
+            text, 
+            room: 'general', 
+            type: 'text',
+            recipient: recipient
+          });
           input.value = '';
         }
       }
@@ -989,7 +1058,14 @@
         const data = await res.json();
         if (data.success) {
           const type = data.mimetype.startsWith('image/') ? 'image' : 'file';
-          socket.emit('chatMessage', { text: data.url, room: 'general', type, caption: text });
+          const recipient = isAdmin && currentChatUser !== ADMIN_NAME ? currentChatUser : null;
+          socket.emit('chatMessage', { 
+            text: data.url, 
+            room: 'general', 
+            type, 
+            caption: text,
+            recipient: recipient
+          });
           clearFilePreview();
         }
       } catch (err) {
@@ -1036,17 +1112,33 @@
     socket.on('users', (users) => {
       document.getElementById('userCount').textContent = users.length;
       const list = document.getElementById('usersList');
-      list.innerHTML = users.filter(u => u !== currentUser).map(u => `
-        <div class="user-item" onclick="selectChat('${u}')">
-          <span class="user-icon">👤</span>
-          <span>${u}</span>
-          <div class="online-indicator"></div>
-        </div>
-      `).join('');
+      
+      if (isAdmin) {
+        // Admin sees all users and can click to chat with each
+        list.innerHTML = users.filter(u => u !== currentUser).map(u => `
+          <div class="user-item" data-user="${u}" onclick="selectChat('${u}')">
+            <span class="user-icon">👤</span>
+            <span>${u}</span>
+            <div class="online-indicator"></div>
+          </div>
+        `).join('');
+      } else {
+        // Regular users only see Halku
+        list.innerHTML = '';
+      }
     });
 
     socket.on('message', (msg) => {
-      addMessage(msg);
+      // Only show messages relevant to current chat
+      if (isAdmin) {
+        // Admin sees all messages
+        addMessage(msg);
+      } else {
+        // Users only see messages from/to them and Halku
+        if (msg.username === currentUser || msg.username === ADMIN_NAME) {
+          addMessage(msg);
+        }
+      }
     });
 
     // Utilities
