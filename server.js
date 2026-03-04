@@ -1,0 +1,267 @@
+const express = require('express');
+const http = require('http');
+const socketIo = require('socket.io');
+const path = require('path');
+const fs = require('fs');
+const multer = require('multer');
+const bcrypt = require('bcryptjs');
+const crypto = require('crypto');
+
+const app = express();
+const server = http.createServer(app);
+const io = socketIo(server);
+
+// Configuration
+const PORT = process.env.PORT || 3000;
+const DATA_DIR = path.join(__dirname, 'data');
+const UPLOADS_DIR = path.join(__dirname, 'uploads');
+
+// Ensure directories exist
+if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
+if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR);
+
+// File-based storage
+const MESSAGES_FILE = path.join(DATA_DIR, 'messages.json');
+const USERS_FILE = path.join(DATA_DIR, 'users.json');
+
+// Load data
+let messages = [];
+let users = {};
+
+try {
+  if (fs.existsSync(MESSAGES_FILE)) {
+    messages = JSON.parse(fs.readFileSync(MESSAGES_FILE, 'utf8'));
+  }
+  if (fs.existsSync(USERS_FILE)) {
+    users = JSON.parse(fs.readFileSync(USERS_FILE, 'utf8'));
+  }
+} catch (e) {
+  console.log('Starting fresh - no data files found');
+}
+
+// Save data
+function saveMessages() {
+  fs.writeFileSync(MESSAGES_FILE, JSON.stringify(messages, null, 2));
+}
+
+function saveUsers() {
+  fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2));
+}
+
+// Multer for file uploads
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, UPLOADS_DIR),
+  filename: (req, file, cb) => {
+    const uniqueName = Date.now() + '-' + crypto.randomBytes(8).toString('hex') + path.extname(file.originalname);
+    cb(null, uniqueName);
+  }
+});
+const upload = multer({ storage, limits: { fileSize: 10 * 1024 * 1024 } });
+
+// Middleware
+app.use(express.json());
+app.use(express.static('public'));
+app.use('/uploads', express.static(UPLOADS_DIR));
+
+// API Routes
+app.post('/api/register', async (req, res) => {
+  const { username, password } = req.body;
+  if (!username || !password) return res.status(400).json({ error: 'Username and password required' });
+  if (users[username]) return res.status(400).json({ error: 'Username already exists' });
+  
+  const hashedPassword = await bcrypt.hash(password, 10);
+  users[username] = {
+    id: crypto.randomBytes(16).toString('hex'),
+    username,
+    password: hashedPassword,
+    createdAt: new Date().toISOString()
+  };
+  saveUsers();
+  res.json({ success: true, username });
+});
+
+app.post('/api/login', async (req, res) => {
+  const { username, password } = req.body;
+  if (!users[username]) return res.status(400).json({ error: 'Invalid credentials' });
+  
+  const valid = await bcrypt.compare(password, users[username].password);
+  if (!valid) return res.status(400).json({ error: 'Invalid credentials' });
+  
+  res.json({ success: true, username, userId: users[username].id });
+});
+
+app.get('/api/messages', (req, res) => {
+  const { room = 'general', limit = 100 } = req.query;
+  const roomMessages = messages.filter(m => m.room === room);
+  res.json(roomMessages.slice(-limit));
+});
+
+app.post('/api/upload', upload.single('file'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+  res.json({
+    success: true,
+    url: `/uploads/${req.file.filename}`,
+    filename: req.file.originalname,
+    mimetype: req.file.mimetype,
+    size: req.file.size
+  });
+});
+
+// Serve index.html
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+// Socket.IO
+const onlineUsers = new Map();
+const userSockets = new Map();
+
+io.on('connection', (socket) => {
+  console.log('User connected:', socket.id);
+  let currentUser = null;
+  let currentRoom = 'general';
+
+  socket.on('register', async (data) => {
+    const { username, password } = data;
+    if (!users[username]) {
+      const hashedPassword = await bcrypt.hash(password, 10);
+      users[username] = {
+        id: crypto.randomBytes(16).toString('hex'),
+        username,
+        password: hashedPassword,
+        createdAt: new Date().toISOString()
+      };
+      saveUsers();
+    }
+    const valid = await bcrypt.compare(password, users[username].password);
+    if (valid) {
+      currentUser = username;
+      socket.username = username;
+      socket.join('general');
+      socket.emit('auth-success', { username, userId: users[username].id });
+      socket.emit('users', getOnlineUsers());
+      socket.broadcast.emit('message', { type: 'system', text: `${username} joined`, room: 'general' });
+    } else {
+      socket.emit('auth-error', { error: 'Invalid credentials' });
+    }
+  });
+
+  socket.on('login', async (data) => {
+    const { username, password } = data;
+    if (users[username]) {
+      const valid = await bcrypt.compare(password, users[username].password);
+      if (valid) {
+        currentUser = username;
+        socket.username = username;
+        socket.join('general');
+        socket.emit('auth-success', { username, userId: users[username].id });
+        socket.emit('users', getOnlineUsers());
+        socket.broadcast.emit('message', { type: 'system', text: `${username} joined`, room: 'general' });
+      } else {
+        socket.emit('auth-error', { error: 'Invalid credentials' });
+      }
+    } else {
+      socket.emit('auth-error', { error: 'User not found' });
+    }
+  });
+
+  socket.on('join-room', (room) => {
+    if (currentUser) {
+      socket.leave(currentRoom);
+      currentRoom = room;
+      socket.join(room);
+      socket.emit('room-joined', { room });
+      socket.emit('messages', messages.filter(m => m.room === room).slice(-100));
+      socket.broadcast.to(room).emit('message', { type: 'system', text: `${currentUser} joined ${room}`, room });
+    }
+  });
+
+  socket.on('chatMessage', (data) => {
+    if (!currentUser) return;
+    const { text, room = 'general', type = 'text' } = data;
+    
+    const message = {
+      id: crypto.randomBytes(16).toString('hex'),
+      type: 'user',
+      username: currentUser,
+      text,
+      room,
+      time: new Date().toISOString(),
+      messageType: type
+    };
+    
+    messages.push(message);
+    saveMessages();
+    io.to(room).emit('message', { ...message, time: new Date(message.time).toLocaleTimeString() });
+  });
+
+  socket.on('privateMessage', (data) => {
+    if (!currentUser) return;
+    const { to, text } = data;
+    
+    const message = {
+      id: crypto.randomBytes(16).toString('hex'),
+      type: 'private',
+      from: currentUser,
+      to,
+      text,
+      time: new Date().toISOString()
+    };
+    
+    messages.push(message);
+    saveMessages();
+    
+    const targetSocket = userSockets.get(to);
+    if (targetSocket) {
+      targetSocket.emit('privateMessage', message);
+    }
+    socket.emit('privateMessage', { ...message, sent: true });
+  });
+
+  socket.on('reaction', (data) => {
+    if (!currentUser) return;
+    const { messageId, emoji, room = 'general' } = data;
+    
+    const msg = messages.find(m => m.id === messageId);
+    if (msg) {
+      if (!msg.reactions) msg.reactions = {};
+      if (!msg.reactions[emoji]) msg.reactions[emoji] = [];
+      if (!msg.reactions[emoji].includes(currentUser)) {
+        msg.reactions[emoji].push(currentUser);
+        saveMessages();
+        io.to(room).emit('reaction', { messageId, emoji, users: msg.reactions[emoji] });
+      }
+    }
+  });
+
+  socket.on('disconnect', () => {
+    if (currentUser) {
+      onlineUsers.delete(currentUser);
+      userSockets.delete(currentUser);
+      io.emit('users', getOnlineUsers());
+      io.to(currentRoom).emit('message', { type: 'system', text: `${currentUser} left`, room: currentRoom });
+    }
+  });
+
+  function getOnlineUsers() {
+    return Array.from(onlineUsers.keys());
+  }
+});
+
+// Track online users
+setInterval(() => {
+  onlineUsers.clear();
+  io.sockets.sockets.forEach(socket => {
+    if (socket.username) {
+      onlineUsers.set(socket.username, socket.id);
+      userSockets.set(socket.username, socket);
+    }
+  });
+  io.emit('users', Array.from(onlineUsers.keys()));
+}, 5000);
+
+server.listen(PORT, () => {
+  console.log(`🚀 Chat server running at http://localhost:${PORT}`);
+  console.log(`📁 Data directory: ${DATA_DIR}`);
+  console.log(`📤 Uploads directory: ${UPLOADS_DIR}`);
+});
